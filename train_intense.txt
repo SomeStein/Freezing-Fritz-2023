@@ -1,0 +1,126 @@
+# MODEL TRAINING
+
+X = data_labeled_clean.iloc[:, :-1]
+y = data_labeled_clean.iloc[:, -1]
+
+N = 1
+
+mean_rmse = 0
+
+for i in range(N):
+
+   print(f"Model {i} is being trained")
+
+   # Split the data into train and test sets
+   X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+   X_test = X_test.to_numpy()
+   data_train_np = np.column_stack((X_train.to_numpy(), y_train.to_numpy()))
+
+   model_dictionary = {}
+
+   # dictionary mit subsets durch data_train
+   subsets = {}
+   feature_indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+   split_by_polynomial(data_train_np, feature_indices,
+                       subsets, 1, 150, threshold=100)
+
+   #print("Number of subsets: ", len(subsets))
+
+   # train model on every split
+   for key in subsets:
+
+      start = time.time()
+
+      subset = subsets[key]
+      X_subset = subset[:, :-1]
+      y_subset = np.ravel(subset[:, -1:])
+
+      key_feature_indices = [index for (index, value) in key]
+
+      # Define the CatBoostRegressor
+      model = CatBoostRegressor(
+          ignored_features=key_feature_indices, verbose=False)
+
+      # Define the parameter grid for GridSearchCV
+      param_grid = {
+          'learning_rate': np.round(np.linspace(0.005, 0.1, 20), 3),
+          'depth': [1, 2, 3, 4, 5, 6],
+          'iterations': range(600, 2000, 50)
+      }
+
+      # Perform GridSearchCV
+      grid_search = GridSearchCV(
+          model, param_grid, cv=5, scoring='neg_mean_squared_error', n_jobs=-1, verbose=1)
+      grid_search.fit(X_subset, y_subset)
+
+      # Get the best parameters and the best score
+      best_params = grid_search.best_params_
+      best_score = -grid_search.best_score_
+      best_depth = best_params["depth"]
+      best_iterations = best_params["iterations"]
+      best_learning_rate = best_params["learning_rate"]
+
+      # print("Best parameters used for this model: ", best_params)
+      print(f"Key: {key}, RMSE: {round((best_score)**(1/2),3)}, depth: {best_depth}, iterations: {best_iterations}, learning rate: {best_learning_rate}")
+      print(f"this took {time.time()-start} seconds\n")
+
+      # Train the CatBoost model with the best parameters
+      best_model = CatBoostRegressor(**best_params, verbose=0)
+      best_model.fit(X_subset, y_subset)
+
+      model_dictionary[key] = best_model
+
+   y_pred = []
+
+   for datapoint in X_test:
+      key = find_matching_key(model_dictionary, datapoint)
+      pred = model_dictionary[key].predict([datapoint])
+      y_pred.append(pred)
+
+   y_pred = np.array(y_pred)
+   rmse = np.sqrt(mean_squared_error(y_pred, y_test))
+   mean_rmse += rmse
+
+mean_rmse /= N
+
+TOOK: 60m 37.5 seconds
+
+print(f"\nMean rmse: {mean_rmse}")
+
+OUTPUT:
+
+Model 0 is being trained
+Fitting 5 folds for each of 3360 candidates, totalling 16800 fits
+Key: ((8, 0.0), (9, 0.0), (0, 0.0)), RMSE: 1.061, depth: 1, iterations: 1650, learning rate: 0.01
+this took 471.43214201927185 seconds
+
+Fitting 5 folds for each of 3360 candidates, totalling 16800 fits
+Key: ((8, 0.0), (9, 0.0), (0, 1.0)), RMSE: 0.996, depth: 1, iterations: 950, learning rate: 0.015
+this took 465.5934991836548 seconds
+
+Fitting 5 folds for each of 3360 candidates, totalling 16800 fits
+Key: ((8, 0.0), (9, 1.0), (0, 0.0)), RMSE: 1.142, depth: 3, iterations: 650, learning rate: 0.035
+this took 445.45675706863403 seconds
+
+Fitting 5 folds for each of 3360 candidates, totalling 16800 fits
+Key: ((8, 0.0), (9, 1.0), (0, 1.0)), RMSE: 0.542, depth: 2, iterations: 1400, learning rate: 0.02
+this took 441.6538619995117 seconds
+
+Fitting 5 folds for each of 3360 candidates, totalling 16800 fits
+Key: ((8, 1.0), (3, 0.0), (2, 0.0)), RMSE: 1.444, depth: 4, iterations: 650, learning rate: 0.03
+this took 459.40061688423157 seconds
+
+Fitting 5 folds for each of 3360 candidates, totalling 16800 fits
+Key: ((8, 1.0), (3, 0.0), (2, 1.0)), RMSE: 0.628, depth: 2, iterations: 1850, learning rate: 0.04
+this took 441.8978340625763 seconds
+
+Fitting 5 folds for each of 3360 candidates, totalling 16800 fits
+Key: ((8, 1.0), (3, 1.0), (9, 0.0)), RMSE: 0.58, depth: 3, iterations: 1200, learning rate: 0.025
+this took 457.52249813079834 seconds
+
+Fitting 5 folds for each of 3360 candidates, totalling 16800 fits
+Key: ((8, 1.0), (3, 1.0), (9, 1.0)), RMSE: 0.427, depth: 2, iterations: 1950, learning rate: 0.015
+this took 453.7796308994293 seconds
+
+
+Mean rmse: 0.8370313156174813
