@@ -1,0 +1,205 @@
+INPUT:
+
+# DATA CLEANING
+
+data_labeled_np = data_labeled.to_numpy()
+
+#Filter all Datapoints where T-Bed < T-Outside
+filter = data_labeled_np[:,11] < data_labeled_np[:,12] 
+faulty_data = data_labeled_np[~filter]
+data_labeled_np = data_labeled_np[filter]
+
+
+#Filter all Datapoints where T-Bed > 40
+filter = data_labeled_np[:,12] < 40 
+faulty_data = np.row_stack((faulty_data, data_labeled_np[~filter]))
+over40 = data_labeled_np[~filter]
+data_labeled_np = data_labeled_np[filter]
+
+
+#Create new data from linear transforming samples with T-Bed > 40 to fahrenheit
+over40[:, 12] -= 32
+over40[:, 12] *= 5/9
+data_labeled_np = np.concatenate((data_labeled_np, over40))
+
+#Filter outliers global
+rmse, coefs, filter = RMSE_polynomial(data_labeled_np, degree = 1, threshold = 3)
+faulty_data = np.row_stack((faulty_data, data_labeled_np[~filter]))
+data_labeled_np = data_labeled_np[filter]
+
+#Create subset ditionary according to best polynomial approximation of splits 
+dictionary_subsets = {}
+feature_indices = [0,1,2,3,4,5,6,7,8,9,10]
+split_by_polynomial(data_labeled_np, feature_indices, dictionary_subsets, degree = 1, min_size = 15, threshold=2.1)
+
+
+#Filter outliers per split
+sum_rmse = 0
+count = 0
+verbose = 0
+
+for key in dictionary_subsets:
+   
+   subset = dictionary_subsets[key]
+   rmse, coefs, filter = RMSE_polynomial(subset,degree = 1,threshold = 2.1)
+   sum_rmse += rmse
+   faulty_data = np.row_stack((faulty_data, subset[~filter]))
+   new_subset = subset[filter]
+   dictionary_subsets[key] = new_subset
+   
+   
+   if rmse > 0.9:
+      count += 1
+      if verbose == 1: 
+         print("dictionary key: ", key)
+         print("Root mean squared error: ", rmse)
+         plt.scatter(new_subset[:, 11],new_subset[:, 12], c='blue', label='Residual <= Threshold*std')
+         plt.scatter(subset[~filter][:, 11], subset[~filter][:, 12], c='orange', label='Residual > Threshold*std')
+
+         x_values = np.linspace(-5, 25, 100)
+         y_values = np.polyval(coefs[::-1], x_values)
+         plt.plot(x_values, y_values, color='red', label='Polynomial Regression')
+
+         plt.ylim(0, 35)
+         plt.xlim(-5,25)
+         plt.show()
+         
+   if verbose == 2: 
+         print("dictionary key: ", key)
+         print("Root mean squared error: ", rmse)
+         plt.scatter(new_subset[:, 11],new_subset[:, 12], c='blue', label='Residual <= Threshold*std')
+         plt.scatter(subset[~filter][:, 11], subset[~filter][:, 12], c='orange', label='Residual > Threshold*std')
+
+         x_values = np.linspace(-5, 25, 100)
+         y_values = np.polyval(coefs[::-1], x_values)
+         plt.plot(x_values, y_values, color='red', label='Polynomial Regression')
+
+         #plt.ylim(0, 35)
+         #plt.xlim(-5,25)
+         plt.show()
+
+data_labeled_np = np.concatenate(tuple(list(dictionary_subsets.values())))
+
+#Print stats about splitting
+print("Total number of subsets: ", len(dictionary_subsets))
+print("Subsets with rmse < 0.9: " ,len(dictionary_subsets) - count)
+print("Subsets with rmse > 0.9: ", count)
+print("Mean rmse: ", sum_rmse / len(dictionary_subsets))
+
+# Final Model
+
+dataset = data_labeled_clean.to_numpy()
+
+# dictionary of subsets of clean data
+subsets = {}
+feature_indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+split_by_polynomial(dataset, feature_indices, subsets,
+                    degree=1, min_size=150, threshold=100)
+print("Number of subsets: ", len(subsets))
+
+
+# train model on every subset
+model_dictionary = {}
+
+for key in subsets:
+
+    start = time.time()
+
+    subset = subsets[key]
+    X_subset = subset[:, :-1]
+    y_subset = np.ravel(subset[:, -1:])
+
+    key_feature_indices = [index for (index, value) in key]
+
+    # Define the CatBoostRegressor
+    model = CatBoostRegressor(
+        ignored_features=key_feature_indices, verbose=False)
+
+    # Define the parameter grid for GridSearchCV
+    param_grid = {
+        'learning_rate': np.round(np.linspace(0.005, 0.1, 25), 3),
+        'depth': [1, 2, 3, 4, 5, 6],
+        'iterations': range(400, 2100, 50)
+    }
+
+    # Perform GridSearchCV
+    grid_search = GridSearchCV(
+        model, param_grid, cv=7, scoring='neg_mean_squared_error', n_jobs=-1, verbose=1)
+    grid_search.fit(X_subset, y_subset)
+
+    # Get the best parameters and the best score
+    best_params = grid_search.best_params_
+    best_score = -grid_search.best_score_
+    best_depth = best_params["depth"]
+    best_iterations = best_params["iterations"]
+    best_learning_rate = best_params["learning_rate"]
+
+    # print("Best parameters used for this model: ", best_params)
+    print(f"Key: {key}, RMSE: {round((best_score)**(1/2),3)}, depth: {best_depth}, iterations: {best_iterations}, learning rate: {best_learning_rate}")
+    print(f"this took {time.time()-start} seconds\n")
+
+    # Train the CatBoost model with the best parameters
+    best_model = CatBoostRegressor(**best_params, verbose=0)
+    best_model.fit(X_subset, y_subset)
+
+    model_dictionary[key] = best_model
+
+
+OUTPUT:
+
+Number of subsets:  8
+Fitting 7 folds for each of 5100 candidates, totalling 35700 fits
+Key: ((8, 0.0), (9, 0.0), (0, 0.0)), RMSE: 0.963, depth: 1, iterations: 1600, learning rate: 0.033
+this took 1077.2986810207367 seconds
+
+Fitting 7 folds for each of 5100 candidates, totalling 35700 fits
+Key: ((8, 0.0), (9, 0.0), (0, 1.0)), RMSE: 0.881, depth: 2, iterations: 400, learning rate: 0.041
+this took 1065.8253428936005 seconds
+
+Fitting 7 folds for each of 5100 candidates, totalling 35700 fits
+Key: ((8, 0.0), (9, 1.0), (0, 0.0)), RMSE: 1.327, depth: 2, iterations: 400, learning rate: 0.049
+this took 1074.3182709217072 seconds
+
+Fitting 7 folds for each of 5100 candidates, totalling 35700 fits
+Key: ((8, 0.0), (9, 1.0), (0, 1.0)), RMSE: 0.55, depth: 1, iterations: 1750, learning rate: 0.017
+this took 1009.638699054718 seconds
+
+Fitting 7 folds for each of 5100 candidates, totalling 35700 fits
+Key: ((8, 1.0), (3, 0.0), (2, 0.0)), RMSE: 1.21, depth: 4, iterations: 2050, learning rate: 0.025
+this took 1036.2630200386047 seconds
+
+Fitting 7 folds for each of 5100 candidates, totalling 35700 fits
+Key: ((8, 1.0), (3, 0.0), (2, 1.0)), RMSE: 0.669, depth: 2, iterations: 750, learning rate: 0.045
+this took 1050.7643988132477 seconds
+
+Fitting 7 folds for each of 5100 candidates, totalling 35700 fits
+Key: ((8, 1.0), (3, 1.0), (9, 0.0)), RMSE: 0.592, depth: 1, iterations: 1850, learning rate: 0.013
+this took 1067.9106669425964 seconds
+
+Fitting 7 folds for each of 5100 candidates, totalling 35700 fits
+Key: ((8, 1.0), (3, 1.0), (9, 1.0)), RMSE: 0.461, depth: 2, iterations: 700, learning rate: 0.092
+this took 1056.4988958835602 seconds
+
+DATA PER KEY TRAINSET:
+
+((8, 0.0), (9, 0.0), (0, 0.0)) 216
+((8, 0.0), (9, 0.0), (0, 1.0)) 226
+((8, 0.0), (9, 1.0), (0, 0.0)) 217
+((8, 0.0), (9, 1.0), (0, 1.0)) 193
+((8, 1.0), (3, 0.0), (2, 0.0)) 208
+((8, 1.0), (3, 0.0), (2, 1.0)) 214
+((8, 1.0), (3, 1.0), (9, 0.0)) 221
+((8, 1.0), (3, 1.0), (9, 1.0)) 216
+
+
+DATA PER KEY TESTSET:
+
+((8, 0.0), (9, 0.0), (0, 0.0)) 40
+((8, 0.0), (9, 0.0), (0, 1.0)) 48
+((8, 0.0), (9, 1.0), (0, 0.0)) 52
+((8, 0.0), (9, 1.0), (0, 1.0)) 52
+((8, 1.0), (3, 0.0), (2, 0.0)) 42
+((8, 1.0), (3, 0.0), (2, 1.0)) 49
+((8, 1.0), (3, 1.0), (9, 0.0)) 37
+((8, 1.0), (3, 1.0), (9, 1.0)) 45
+
